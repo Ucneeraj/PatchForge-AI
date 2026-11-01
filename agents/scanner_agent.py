@@ -1,19 +1,15 @@
 """
 scanner_agent.py
 
-The Scanner agent parses a Python source file into an AST and looks for
-patterns matching known CWE categories. This is a small, real, working
-implementation of two rules (not a stub) so you can see the localization
-approach end-to-end; extend `RULES` to add more CWE coverage.
-
-Rule format: each rule is a function(ast.AST, source_lines) -> list[dict]
-returning raw match info, which the agent turns into Finding objects.
+The Scanner agent parses Python source files into ASTs and looks for
+patterns matching known CWE categories.
 """
 
 from __future__ import annotations
 
 import ast
-from typing import Callable
+from pathlib import Path
+from typing import Callable, List
 
 from protocol import Finding, new_id
 from agents.base_agent import BaseAgent
@@ -37,12 +33,14 @@ def _rule_sql_string_formatting(tree: ast.AST, lines: list[str]) -> list[dict]:
         if not is_execute or not node.args:
             continue
         first_arg = node.args[0]
-        risky = isinstance(first_arg, (ast.JoinedStr,)) or (
-            isinstance(first_arg, ast.BinOp) and isinstance(first_arg.op, ast.Mod)
-        ) or (
-            isinstance(first_arg, ast.Call)
-            and isinstance(first_arg.func, ast.Attribute)
-            and first_arg.func.attr == "format"
+        risky = (
+            isinstance(first_arg, ast.JoinedStr)
+            or (isinstance(first_arg, ast.BinOp) and isinstance(first_arg.op, ast.Mod))
+            or (
+                isinstance(first_arg, ast.Call)
+                and isinstance(first_arg.func, ast.Attribute)
+                and first_arg.func.attr == "format"
+            )
         )
         if risky:
             hits.append({
@@ -89,13 +87,19 @@ class ScannerAgent(BaseAgent):
     name = "scanner"
 
     def run(self, file_path: str, source: str) -> list[Finding]:
-        tree = ast.parse(source, filename=file_path)
+        """Scans a single source string and returns AST-matched findings."""
+        try:
+            tree = ast.parse(source, filename=file_path)
+        except SyntaxError:
+            return []
+
         lines = source.splitlines()
         findings: list[Finding] = []
 
         for rule in RULES:
             for hit in rule(tree, lines):
                 start, end = hit["line_start"], hit["line_end"]
+                # Correct array slicing (1-indexed lines from AST to 0-indexed list)
                 snippet = "\n".join(lines[max(0, start - 1):end])
                 findings.append(
                     Finding(
@@ -110,3 +114,24 @@ class ScannerAgent(BaseAgent):
                     )
                 )
         return findings
+
+    def scan_repo(self, source_path: str) -> list[Finding]:
+        """Discovers all .py files in source_path and scans them."""
+        source_dir = Path(source_path)
+        all_findings: list[Finding] = []
+
+        # Recursively scan .py files while excluding hidden/virtual environment folders
+        files_to_scan = [
+            p for p in source_dir.rglob("*.py")
+            if not any(ignored in p.parts for ignored in [".git", "venv", ".venv", "__pycache__", "build", "dist"])
+        ]
+
+        for p in files_to_scan:
+            try:
+                content = p.read_text(encoding="utf-8", errors="ignore")
+                rel_path = str(p.relative_to(source_dir))
+                all_findings.extend(self.run(file_path=rel_path, source=content))
+            except Exception:
+                continue
+
+        return all_findings

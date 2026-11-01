@@ -10,15 +10,14 @@ Owns the state machine described in the architecture doc:
                                      |
                         (max iterations) -> Escalate
 
-The Orchestrator does not itself decide *how* to patch or *why* a patch
-failed -- it only sequences the specialist agents and enforces the
-system-level bounds (NFR2 timeouts are enforced inside the sandbox
-backend; NFR5 iteration/token caps are enforced here).
+The Orchestrator sequences specialist agents and enforces system-level bounds.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
+from pathlib import Path
 
 from agents.patch_generator_agent import PatchGeneratorAgent, OpenAIPatchClient
 from agents.planner_agent import PlannerAgent
@@ -50,55 +49,60 @@ class Orchestrator:
 
     def run_repo(self, source: str, workdir: str | None = None) -> RepoScanReport:
         """
-        Entry point for the "give it a GitHub link" use case. Clones (or
-        opens, if given a local path) the repo, makes a disposable
-        working copy of it (the "corrected clone" -- the original is
-        never touched), scans every file in the currently-supported
-        languages (Python only for now), and runs each finding through
-        the full repair loop against REAL code -- applying real fixes
-        and running real tests inside the corrected clone. Returns one
-        aggregated report, including where the corrected clone lives on
-        disk.
+        Entry point for repository scanning and remediation.
+        Clones or opens the repo, creates a disposable working copy,
+        scans all Python files, and executes the patch-test loop for any findings.
         """
         context = self.repo_ingestion.timed_run("ingest", source, workdir)
 
+        # Create corrected clone root directory
         corrected_root = context.local_path.rstrip("/\\") + "_corrected"
         shutil.rmtree(corrected_root, ignore_errors=True)
         shutil.copytree(context.local_path, corrected_root)
 
         original_sandbox_runner = self.sandbox_runner
-        # Activate Milestone 3: Live Docker execution
-        self.sandbox_runner = SandboxRunnerAgent(
-            backend=DockerSandboxBackend()
-        )
+        original_patch_generator = self.patch_generator
+
+        # Activate Live Execution (Docker Sandbox & OpenAI API Client)
+        self.sandbox_runner = SandboxRunnerAgent(backend=DockerSandboxBackend())
+        self.patch_generator = PatchGeneratorAgent(llm_client=OpenAIPatchClient())
         
-        # Activate Milestone 3: Live LLM execution
-        self.patch_generator = PatchGeneratorAgent(
-            llm_client=OpenAIPatchClient()
-        )
+        all_outcomes: list[RepairOutcome] = []
+        scan_errors: dict[str, str] = {}
+        files_count = 0
+
         try:
-            all_outcomes: list[RepairOutcome] = []
-            scan_errors: dict[str, str] = {}
-            for source_file in context.files:
+            # Fallback file discovery if context.files is empty or unpopulated
+            root_path = Path(context.local_path)
+            py_files = list(root_path.rglob("*.py"))
+            
+            # Filter out virtualenvs, git, build artifacts
+            py_files = [
+                p for p in py_files
+                if not any(ignored in p.parts for ignored in [".git", "venv", ".venv", "__pycache__", "build", "dist"])
+            ]
+            files_count = len(py_files)
+
+            for p in py_files:
+                rel_path = str(p.relative_to(root_path))
                 try:
-                    with open(source_file.absolute_path, "r", encoding="utf-8") as f:
-                        file_source = f.read()
-                    outcomes = self.run_file(source_file.path, file_source)
+                    file_source = p.read_text(encoding="utf-8", errors="ignore")
+                    outcomes = self.run_file(rel_path, file_source)
                     all_outcomes.extend(outcomes)
-                except (SyntaxError, UnicodeDecodeError) as e:
-                    # A single broken/unparseable file (invalid syntax,
-                    # bad encoding, generated/binary-ish content, etc.)
-                    # must not take down the whole repo scan -- record
-                    # it honestly and keep going.
-                    scan_errors[source_file.path] = f"{type(e).__name__}: {e}"
-                    self.scanner._log("scan", f"skipping {source_file.path}: {e}")
+                except Exception as e:
+                    scan_errors[rel_path] = f"{type(e).__name__}: {e}"
+                    if hasattr(self.scanner, "_log"):
+                        self.scanner._log("scan", f"skipping {rel_path}: {e}")
+
         finally:
+            # Restore original backends
             self.sandbox_runner = original_sandbox_runner
+            self.patch_generator = original_patch_generator
 
         return RepoScanReport(
             source=source,
-            files_scanned=len(context.files),
-            skipped_languages=context.skipped_languages,
+            files_scanned=files_count,
+            skipped_languages=getattr(context, "skipped_languages", {}),
             outcomes=all_outcomes,
             corrected_clone_path=corrected_root,
             scan_errors=scan_errors,
@@ -138,7 +142,7 @@ class Orchestrator:
                     reflections=reflections,
                 )
 
-            if reflection.decision == Decision.ESCALATE:
+            if reflection.decision == Decision.ESCALATE or iteration >= self.max_iterations:
                 return RepairOutcome(
                     attempt_id=attempt_id,
                     finding=plan.finding,

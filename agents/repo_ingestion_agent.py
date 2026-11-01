@@ -79,18 +79,15 @@ class RepoIngestionAgent(BaseAgent):
     def _looks_like_git_url(source: str) -> bool:
         return source.startswith("http://") or source.startswith("https://") or source.endswith(".git")
 
-    def _clone(self, url: str, workdir: str | None) -> str:
-        target = workdir or tempfile.mkdtemp(prefix="patchforge_repo_")
-        self._log("ingest", f"cloning {url} -> {target}")
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", url, target],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"git clone failed: {result.stderr.strip()}")
-        return target
+    def _clone(self, repo_url: str, target_dir: str) -> str:
+        import subprocess
+        from pathlib import Path
+    
+        cmd = ["git", "clone", repo_url, target_dir]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+         raise RuntimeError(f"Git clone failed: {res.stderr}")
+        return target_dir
 
     def _discover_files(self, root: str) -> tuple[list[SourceFile], dict]:
         root_path = Path(root)

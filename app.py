@@ -98,7 +98,14 @@ else:
             status_container.write("📥 **[Agent: Repo Ingestion]** Cloning repository snapshot...")
             ingest_agent = RepoIngestionAgent()
             workdir = tempfile.mkdtemp(prefix="patchforge_ui_")
-            local_path = ingest_agent._clone(repo_url.strip(), workdir)
+            
+            try:
+                local_path = ingest_agent._clone(repo_url.strip(), workdir)
+            except Exception as clone_err:
+                status_container.update(label="❌ Git Clone Failed", state="error", expanded=True)
+                st.error(f"Failed to clone repository. Check the URL and try again. Details: {clone_err}")
+                st.stop()
+                
             status_container.write("✅ Repository ingested successfully.")
 
             # 2. Orchestrator Phase
@@ -129,9 +136,9 @@ else:
             if not isinstance(outcomes, list):
                 outcomes = []
                 
-            total_scanned = len(outcomes)
-            passed = sum(1 for item in outcomes if str(item.get("status", "")).upper() in ["PASS", "SUCCESS", "REPAIRED"])
-            failed = total_scanned - passed
+            total_scanned = report.get("files_scanned", len(outcomes))
+            passed = sum(1 for item in outcomes if item.get("success") is True or str(item.get("status", "")).upper() in ["PASS", "SUCCESS", "REPAIRED"])
+            failed = len(outcomes) - passed
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Execution Time", f"{duration}s")
@@ -143,18 +150,25 @@ else:
             
             if outcomes:
                 for idx, outcome in enumerate(outcomes, 1):
-                    file_name = outcome.get("file", outcome.get("target_file", f"File #{idx}"))
-                    status = str(outcome.get("status", "UNKNOWN")).upper()
-                    attempts = outcome.get("attempts", outcome.get("iterations", "-"))
-                    summary = outcome.get("summary", outcome.get("stack_trace_summary", "No details reported."))
+                    finding = outcome.get("finding", {})
+                    file_name = finding.get("file_path", outcome.get("file", outcome.get("target_file", f"File #{idx}")))
+                    is_success = outcome.get("success", False) or str(outcome.get("status", "")).upper() in ["PASS", "SUCCESS", "REPAIRED"]
+                    status_str = "REPAIRED" if is_success else "FAILED"
+                    attempts = outcome.get("iterations_used", outcome.get("attempts", outcome.get("iterations", "-")))
+                    
+                    test_rep = outcome.get("test_report", {})
+                    summary = test_rep.get("stack_trace_summary") or outcome.get("summary", "No details reported.")
 
-                    if status in ["PASS", "SUCCESS", "REPAIRED"]:
-                        st.success(f"**[{status}]** `{file_name}` — Repaired in {attempts} attempt(s)")
+                    if is_success:
+                        st.success(f"**[{status_str}]** `{file_name}` — Repaired in {attempts} attempt(s)")
                     else:
-                        st.error(f"**[{status}]** `{file_name}` — Failed after {attempts} attempt(s)")
+                        st.error(f"**[{status_str}]** `{file_name}` — Failed after {attempts} attempt(s)")
                     
                     with st.expander(f"Inspect outcome details for {file_name}"):
-                        st.code(summary, language="text")
+                        if finding:
+                            st.write(f"**Vulnerability Rule:** `{finding.get('rule_id')}` | **CWE:** `{finding.get('cwe_id')}` | **Severity:** `{finding.get('severity')}`")
+                            st.code(finding.get("snippet", ""), language="python")
+                        st.text_area("Stack Trace / Test Log", summary, height=150)
             else:
                 st.info("No actionable vulnerabilities or failing tests detected in the target repository.")
 
