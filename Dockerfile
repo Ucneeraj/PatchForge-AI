@@ -1,3 +1,8 @@
 FROM python:3.11-slim
+
 WORKDIR /workspace
-RUN pip install pytest
+
+# Install pytest and the json-report plugin
+RUN pip install --no-cache-dir pytest pytest-json-report
+
+CMD ["pytest"]
