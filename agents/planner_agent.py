@@ -9,8 +9,8 @@ needs an LLM.
 
 from __future__ import annotations
 
-from ..protocol import Finding, RepairPlan, new_id
-from .base_agent import BaseAgent
+from protocol import Finding, RepairPlan, new_id
+from agents.base_agent import BaseAgent
 
 _SEVERITY_WEIGHT = {"critical": 3, "high": 2, "medium": 1, "low": 0}
 

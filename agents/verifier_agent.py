@@ -11,9 +11,8 @@ identified as a gap in the literature review.
 
 from __future__ import annotations
 
-from ..protocol import Decision, ReflectionResult, Status, TestResult
-from .base_agent import BaseAgent
-
+from protocol import Decision, ReflectionResult, Status, TestResult
+from agents.base_agent import BaseAgent
 
 class VerifierAgent(BaseAgent):
     name = "verifier-reflector"

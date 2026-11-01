@@ -20,13 +20,13 @@ from __future__ import annotations
 
 import shutil
 
-from .agents.patch_generator_agent import PatchGeneratorAgent
-from .agents.planner_agent import PlannerAgent
-from .agents.repo_ingestion_agent import RepoIngestionAgent
-from .agents.sandbox_runner_agent import LocalSandboxBackend, SandboxRunnerAgent
-from .agents.scanner_agent import ScannerAgent
-from .agents.verifier_agent import VerifierAgent
-from .protocol import Decision, RepairOutcome, RepoScanReport
+from agents.patch_generator_agent import PatchGeneratorAgent, OpenAIPatchClient
+from agents.planner_agent import PlannerAgent
+from agents.repo_ingestion_agent import RepoIngestionAgent
+from agents.sandbox_runner_agent import LocalSandboxBackend, SandboxRunnerAgent, DockerSandboxBackend
+from agents.scanner_agent import ScannerAgent
+from agents.verifier_agent import VerifierAgent
+from protocol import Decision, RepairOutcome, RepoScanReport
 
 
 class Orchestrator:
@@ -66,12 +66,15 @@ class Orchestrator:
         shutil.rmtree(corrected_root, ignore_errors=True)
         shutil.copytree(context.local_path, corrected_root)
 
-        # Swap in the real local sandbox for the duration of this repo
-        # run, then restore whatever backend was configured before --
-        # run_file()/the single-file demo keep using their own default.
         original_sandbox_runner = self.sandbox_runner
+        # Activate Milestone 3: Live Docker execution
         self.sandbox_runner = SandboxRunnerAgent(
-            backend=LocalSandboxBackend(corrected_root)
+            backend=DockerSandboxBackend()
+        )
+        
+        # Activate Milestone 3: Live LLM execution
+        self.patch_generator = PatchGeneratorAgent(
+            llm_client=OpenAIPatchClient()
         )
         try:
             all_outcomes: list[RepairOutcome] = []

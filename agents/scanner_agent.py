@@ -15,8 +15,8 @@ from __future__ import annotations
 import ast
 from typing import Callable
 
-from ..protocol import Finding, new_id
-from .base_agent import BaseAgent
+from protocol import Finding, new_id
+from agents.base_agent import BaseAgent
 
 
 def _rule_sql_string_formatting(tree: ast.AST, lines: list[str]) -> list[dict]:

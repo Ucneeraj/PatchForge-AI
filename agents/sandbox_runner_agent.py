@@ -2,31 +2,24 @@
 sandbox_runner_agent.py
 
 Applies a CandidatePatch inside a disposable environment and returns a
-structured TestResult. Three backends are provided:
-
-  - DockerSandboxBackend: real, fully isolated implementation using the
-    Docker SDK (docker-py). What you'd use in production (NFR1/NFR2).
-  - LocalSandboxBackend: real fix application + real test execution,
-    but against a plain copied directory instead of a container -- no
-    Docker required. This is what makes "point it at a random repo and
-    get a corrected copy back" work today, without needing Docker or an
-    LLM API key.
-  - MockSandboxBackend: fully simulated, used for the single-file demo
-    and for tests that need deterministic retry behavior.
-
-Swap backends via the `backend` constructor argument -- the agent's
-public interface (`run`) never changes.
+structured TestResult.
 """
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+import tarfile
 import time
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol, TYPE_CHECKING
 
-from ..protocol import CandidatePatch, Status, TestResult
-from .base_agent import BaseAgent
+if TYPE_CHECKING:
+    import docker  # type: ignore
+
+from agents.base_agent import BaseAgent
+from protocol import CandidatePatch, Status, TestResult
 
 
 class SandboxBackend(Protocol):
@@ -36,19 +29,7 @@ class SandboxBackend(Protocol):
 
 class DockerSandboxBackend:
     """
-    Real, fully isolated sandbox backend. Requires the `docker` package
-    and a reachable Docker daemon. Each call:
-      1. Builds/uses a pinned base image with the repo + test deps installed.
-      2. Copies the repo snapshot + applies `patch.diff` inside the container.
-      3. Runs the test suite with `--json-report` (pytest-json-report) so
-         results are structured, not scraped from stdout.
-      4. Destroys the container regardless of outcome.
-
-    Isolation settings implement NFR1:
-      - network_disabled=True
-      - read_only root filesystem, scratch volume mounted for writes
-      - mem_limit / nano_cpus set from config
-      - a hard timeout enforced via `timeout=` on client.containers.run
+    Real, fully isolated sandbox backend using Docker.
     """
 
     def __init__(
@@ -58,7 +39,7 @@ class DockerSandboxBackend:
         cpu_quota: int = 100_000,   # ~1 CPU
         timeout_seconds: int = 60,
     ):
-        import docker  # imported lazily so other backends have no hard dependency
+        import docker  # type: ignore
 
         self.client = docker.from_env()
         self.image = image
@@ -81,8 +62,16 @@ class DockerSandboxBackend:
         try:
             result = container.wait(timeout=self.timeout_seconds)
             exit_code = result.get("StatusCode", 1)
-            report_bytes = container.get_archive("/tmp/report.json")
-            report = self._parse_json_report(report_bytes)
+            try:
+                report_bytes = container.get_archive("/tmp/report.json")
+                report = self._parse_json_report(report_bytes)
+            except Exception as e:
+                logs = container.logs().decode("utf-8", errors="replace")
+                report = {
+                    "passed": [],
+                    "failed": [],
+                    "summary": f"Report extraction failed ({e}). Container logs:\n{logs[-1000:]}",
+                }
         finally:
             container.remove(force=True)
 
@@ -99,30 +88,25 @@ class DockerSandboxBackend:
         )
 
     @staticmethod
-    def _parse_json_report(raw) -> dict:
-        # Placeholder: parse the tar stream returned by get_archive() and
-        # load the pytest-json-report JSON. Left as an implementation
-        # detail specific to your CI image.
-        return {"passed": [], "failed": [], "summary": ""}
+    def _parse_json_report(raw: Any) -> dict:
+        """Parses the tar stream returned by Docker's get_archive() into a JSON dict."""
+        try:
+            tar_stream, _ = raw
+            tar_bytes = b"".join(chunk for chunk in tar_stream)
+            
+            with tarfile.open(fileobj=io.BytesIO(tar_bytes)) as tar:
+                member = tar.getmembers()[0]
+                f = tar.extractfile(member)
+                if f:
+                    return json.load(f)
+            return {"passed": [], "failed": [], "summary": "Could not extract JSON from tar."}
+        except Exception as e:
+            return {"passed": [], "failed": [], "summary": f"Sandbox parsing error: {e}"}
 
 
 class LocalSandboxBackend:
     """
-    Real (non-mocked), non-Docker sandbox: applies a CandidatePatch to an
-    actual file inside a working copy of the repo (the "corrected
-    clone"), then runs real validation against it. The isolation here is
-    "operates on a disposable copy of the repo, never the original" --
-    not full OS-level sandboxing like DockerSandboxBackend. Good enough
-    for local development on trusted code; use DockerSandboxBackend for
-    untrusted input in production.
-
-    Validation, in order of preference:
-      1. If the repo already has its own tests (a tests/ dir or any
-         test_*.py file), run them for real with pytest and use the
-         real result.
-      2. Otherwise, fall back to a syntax check (`python -m py_compile`)
-         on the patched file -- explicitly labeled as such in the
-         result, never reported as if it were a real test pass.
+    Applies CandidatePatch to a local directory copy.
     """
 
     def __init__(self, corrected_clone_root: str, timeout_seconds: int = 60):
@@ -170,16 +154,11 @@ class LocalSandboxBackend:
 
     def _apply_replacement(self, target: Path, patch: CandidatePatch) -> None:
         lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
-        start_idx = patch.line_start - 1
+        start_idx = patch.line_start
         end_idx = patch.line_end
 
-        new_line = patch.replacement_code
-        # Preserve the original line's indentation if the replacement
-        # doesn't already carry its own -- otherwise a fix generated
-        # without leading whitespace (e.g. the SQL-injection regex,
-        # which only captures the call expression itself) would corrupt
-        # indentation inside a function body.
-        original_first_line = lines[start_idx]
+        new_line = patch.replacement_code or ""
+        original_first_line = lines[start_idx] if start_idx < len(lines) else ""
         leading_ws = original_first_line[: len(original_first_line) - len(original_first_line.lstrip())]
         if leading_ws and not new_line.startswith((" ", "\t")):
             new_line = leading_ws + new_line
@@ -230,14 +209,11 @@ class LocalSandboxBackend:
 
 class MockSandboxBackend:
     """
-    Deterministic offline simulation for the single-file demo and for
-    tests that need predictable retry behavior. Simulates a realistic
-    self-healing pattern: the first attempt "fails", the second (as if
-    informed by the Reflector's note) "passes".
+    Deterministic offline simulation backend.
     """
 
     def execute(self, patch: CandidatePatch) -> TestResult:
-        time.sleep(0.05)  # simulate work
+        time.sleep(0.05)
         if patch.iteration == 1:
             return TestResult(
                 attempt_id=patch.attempt_id,

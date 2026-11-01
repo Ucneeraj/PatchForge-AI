@@ -8,7 +8,7 @@ distinct from RepoScanReport.to_json(), which is for machines/CI.
 
 from __future__ import annotations
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 
 class ReportAgent(BaseAgent):

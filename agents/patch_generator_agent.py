@@ -27,8 +27,8 @@ from __future__ import annotations
 import re
 from typing import Optional, Protocol
 
-from ..protocol import CandidatePatch, RepairPlan
-from .base_agent import BaseAgent
+from protocol import CandidatePatch, RepairPlan
+from agents.base_agent import BaseAgent
 
 
 class PatchLLMClient(Protocol):
@@ -160,6 +160,58 @@ class RuleBasedPatchClient:
             + "\n".join(f"+ {line}" for line in new.strip().splitlines())
         )
 
+import os
+from openai import OpenAI  # Ensure the OpenAI library is installed and properly imported
+
+class OpenAIPatchClient:
+    """
+    Live LLM backend for Milestone 3.
+    Uses GPT-4 to generate a patch when the regex rules cannot.
+    """
+    def __init__(self, api_key: Optional[str] = None):
+        # Automatically grabs the OPENAI_API_KEY environment variable if not passed
+        self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
+
+    def generate_patch(
+        self,
+        strategy: str,
+        finding_snippet: str,
+        file_path: str,
+        prior_reflection: Optional[str],
+    ) -> tuple[str, str, Optional[str], Optional[str]]:
+        
+        system_prompt = (
+            "You are an autonomous Python security remediation agent. "
+            "You will be given a vulnerability strategy, a file path, and the vulnerable code. "
+            "Output ONLY the exact Python replacement code. Do not include markdown formatting or explanations."
+        )
+        
+        user_prompt = f"Strategy: {strategy}\nFile: {file_path}\nVulnerable Code:\n{finding_snippet}"
+        if prior_reflection:
+            user_prompt += f"\n\nYour previous attempt failed. Feedback: {prior_reflection}\nFix the issue based on this feedback."
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.2
+            )
+            
+            # Clean up the output to ensure it's raw code
+            replacement_code = response.choices[0].message.content.strip()
+            replacement_code = replacement_code.removeprefix("```python\n").removesuffix("\n```")
+            
+            diff = RuleBasedPatchClient._make_diff(file_path, finding_snippet, replacement_code)
+            rationale = f"Generated via GPT-4 using strategy: {strategy}."
+            
+            # Note: For full Milestone 3 compliance, you can expand the prompt to also output test code
+            return diff, rationale, None, replacement_code
+            
+        except Exception as e:
+            return "", f"LLM API Error: {str(e)}", None, None
 
 class PatchGeneratorAgent(BaseAgent):
     name = "patch-generator"

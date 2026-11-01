@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from .base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 
 # Language scoping lives here, in exactly one place. Adding a language
 # later means: (1) add its extension(s) here, (2) give the Scanner a
