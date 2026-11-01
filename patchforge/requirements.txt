@@ -1,0 +1,12 @@
+# Core framework has no external dependencies beyond the standard library.
+
+# Needed only once you wire in the real (non-mock) backends:
+docker>=7.0.0          # for DockerSandboxBackend in agents/sandbox_runner_agent.py
+anthropic>=0.30.0       # or your chosen LLM provider's SDK, for a real PatchLLMClient
+
+# Testing
+pytest>=7.4.0
+pytest-json-report>=1.5.0   # used by DockerSandboxBackend's real test-report parsing
+
+# Web dashboard (app.py)
+streamlit>=1.32.0
