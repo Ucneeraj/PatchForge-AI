@@ -65,7 +65,7 @@ class RepoIngestionAgent(BaseAgent):
         if self._looks_like_git_url(source):
             local_path = self._clone(source, workdir)
         else:
-            local_path = source
+            local_path = str(Path(source).resolve())
 
         files, skipped = self._discover_files(local_path)
         return RepoContext(
@@ -79,15 +79,16 @@ class RepoIngestionAgent(BaseAgent):
     def _looks_like_git_url(source: str) -> bool:
         return source.startswith("http://") or source.startswith("https://") or source.endswith(".git")
 
-    def _clone(self, repo_url: str, target_dir: str) -> str:
-        import subprocess
-        from pathlib import Path
-    
-        cmd = ["git", "clone", repo_url, target_dir]
+    def _clone(self, repo_url: str, target_dir: str | None = None) -> str:
+        # Generate temporary directory if workdir was not specified
+        if target_dir is None:
+            target_dir = tempfile.mkdtemp(prefix="patchforge_repo_")
+
+        cmd = ["git", "clone", repo_url, str(target_dir)]
         res = subprocess.run(cmd, capture_output=True, text=True)
         if res.returncode != 0:
-         raise RuntimeError(f"Git clone failed: {res.stderr}")
-        return target_dir
+            raise RuntimeError(f"Git clone failed: {res.stderr}")
+        return str(target_dir)
 
     def _discover_files(self, root: str) -> tuple[list[SourceFile], dict]:
         root_path = Path(root)
@@ -108,20 +109,6 @@ class RepoIngestionAgent(BaseAgent):
                     language=LANGUAGE_EXTENSIONS[ext],
                 ))
             elif ext in (".js", ".jsx", ".ts", ".tsx", ".java", ".go", ".rb", ".php"):
-                # Recognized as code, but out of scope for now -- counted
-                # so the report can honestly say "N files were not scanned",
-                # rather than silently ignoring them.
                 skipped[ext] = skipped.get(ext, 0) + 1
 
         return files, skipped
-
-
-"""
-Adding a new language later:
-  1. Add its extension(s) to LANGUAGE_EXTENSIONS above.
-  2. Give ScannerAgent a rule set for that language (e.g. a tree-sitter
-     grammar + equivalent _rule_* functions to the ones in
-     scanner_agent.py, keyed by language).
-  3. Nothing in RepoContext, Orchestrator, or the protocol needs to
-     change -- they already operate on SourceFile.language generically.
-"""

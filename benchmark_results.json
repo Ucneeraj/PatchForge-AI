@@ -1,0 +1,23 @@
+{
+  "source": "https://github.com/Ucneeraj/PatchForge-AI.git",
+  "metrics": {
+    "total_findings": 1,
+    "repaired_findings": 1,
+    "failed_findings": 0,
+    "total_duration_seconds": 6.25,
+    "avg_iterations_per_fix": 1.0,
+    "success_rate_pct": 100.0,
+    "estimated_cost_usd": 0.004
+  },
+  "detailed_outcomes": [
+    {
+      "attempt_id": "attempt-675ad495",
+      "cwe": "CWE-89",
+      "file_path": "sample_vulnerable.py",
+      "line_number": 0,
+      "success": true,
+      "iterations_used": 1,
+      "final_diff": ""
+    }
+  ]
+}

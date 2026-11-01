@@ -1,0 +1,18 @@
+{
+  "source": "https://github.com/Ucneeraj/PatchForge-AI.git",
+  "files_scanned": 18,
+  "corrected_clone_path": "/var/folders/rw/4lmhcfld3096yrjjny9dgc7w0000gn/T/patchforge_repo_giapf9ra_corrected",
+  "total_outcomes": 1,
+  "repaired_count": 1,
+  "outcomes": [
+    {
+      "attempt_id": "attempt-728e6d2f",
+      "cwe": "CWE-89",
+      "file": "sample_vulnerable.py",
+      "line": 0,
+      "success": true,
+      "iterations": 1,
+      "diff": ""
+    }
+  ]
+}
