@@ -28,6 +28,18 @@ from agents.verifier_agent import VerifierAgent
 from protocol import Decision, RepairOutcome, RepoScanReport
 
 
+def get_safe_sandbox_backend(workdir: str):
+    """
+    Attempts to initialize Docker. If Docker daemon is unavailable
+    (e.g., inside Streamlit Cloud), falls back to LocalSandboxBackend.
+    """
+    try:
+        return DockerSandboxBackend()
+    except Exception as e:
+        print(f"Docker socket unavailable ({e}). Falling back to LocalSandboxBackend.")
+        return LocalSandboxBackend(corrected_clone_root=workdir)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -63,8 +75,9 @@ class Orchestrator:
         original_sandbox_runner = self.sandbox_runner
         original_patch_generator = self.patch_generator
 
-        # Activate Live Execution (Docker Sandbox & OpenAI API Client)
-        self.sandbox_runner = SandboxRunnerAgent(backend=DockerSandboxBackend())
+        # Dynamically set sandbox runner (Docker if available, otherwise local process fallback)
+        safe_backend = get_safe_sandbox_backend(corrected_root)
+        self.sandbox_runner = SandboxRunnerAgent(backend=safe_backend)
         self.patch_generator = PatchGeneratorAgent(llm_client=OpenAIPatchClient())
         
         all_outcomes: list[RepairOutcome] = []
