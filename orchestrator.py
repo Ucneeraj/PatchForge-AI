@@ -100,7 +100,7 @@ class Orchestrator:
                 rel_path = str(p.relative_to(root_path))
                 try:
                     file_source = p.read_text(encoding="utf-8", errors="ignore")
-                    outcomes = self.run_file(rel_path, file_source)
+                    outcomes = self.run_file(rel_path, file_source, corrected_root)
                     all_outcomes.extend(outcomes)
                 except Exception as e:
                     scan_errors[rel_path] = f"{type(e).__name__}: {e}"
@@ -121,16 +121,16 @@ class Orchestrator:
             scan_errors=scan_errors,
         )
 
-    def run_file(self, file_path: str, source: str) -> list[RepairOutcome]:
+    def run_file(self, file_path: str, source: str, corrected_root: str | None = None) -> list[RepairOutcome]:
         """Full pipeline: scan a file, then attempt to repair every finding."""
         findings = self.scanner.timed_run("scan", file_path, source)
         if not findings:
             return []
 
         plans = self.planner.run(findings)
-        return [self._repair_one(plan) for plan in plans]
+        return [self._repair_one(plan, corrected_root) for plan in plans]
 
-    def _repair_one(self, plan) -> RepairOutcome:
+    def _repair_one(self, plan, corrected_root: str | None = None) -> RepairOutcome:
         attempt_id = plan.attempt_id
         reflections = []
         prior_reflection = None
@@ -140,6 +140,11 @@ class Orchestrator:
             patch = self.patch_generator.timed_run(
                 attempt_id, plan, iteration, prior_reflection
             )
+            
+            # Attach corrected_clone_path so DockerSandboxBackend knows which directory to mount
+            if corrected_root:
+                setattr(patch, "corrected_clone_path", corrected_root)
+
             result = self.sandbox_runner.timed_run(attempt_id, patch)
             reflection = self.verifier.timed_run(attempt_id, result)
             reflections.append(reflection)
